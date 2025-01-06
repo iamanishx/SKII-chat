@@ -2,7 +2,7 @@ import React, { useEffect, useCallback, useState } from "react";
 import ReactPlayer from "react-player";
 import peer from "../service/peer";
 import { useSocket } from "../context/SocketProvider";
-import { X, Mic, MicOff, Video, VideoOff, Phone, PhoneOff, Copy } from "lucide-react";
+import { Check, Mic, MicOff, Video, VideoOff, Phone, PhoneOff, Copy } from "lucide-react";
 
 const RoomPage = () => {
   const socket = useSocket();
@@ -19,37 +19,127 @@ const RoomPage = () => {
     setRemoteSocketId(id);
   }, []);
 
+  const sendStreams = useCallback(() => {
+    if (myStream) {
+      for (const track of myStream.getTracks()) {
+        const senders = peer.peer.getSenders();
+        const existingSender = senders.find(sender => sender.track?.kind === track.kind);
+        
+        if (existingSender) {
+          existingSender.replaceTrack(track);
+        } else {
+          peer.peer.addTrack(track, myStream);
+        }
+      }
+    }
+  }, [myStream]);
+
   const handleCallUser = useCallback(async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: true,
-    });
-    const offer = await peer.getOffer();
-    socket.emit("user:call", { to: remoteSocketId, offer });
-    setMyStream(stream);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: true,
+      });
+      setMyStream(stream);
+      
+      const offer = await peer.getOffer();
+      socket.emit("user:call", { to: remoteSocketId, offer });
+    } catch (error) {
+      console.error("Error in handleCallUser:", error);
+    }
   }, [remoteSocketId, socket]);
 
+  const handleIncommingCall = useCallback(async ({ from, offer }) => {
+    try {
+      setRemoteSocketId(from);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: true,
+      });
+      setMyStream(stream);
+      
+      const ans = await peer.getAnswer(offer);
+      socket.emit("call:accepted", { to: from, ans });
+      
+      // Send streams after accepting call
+      sendStreams();
+    } catch (error) {
+      console.error("Error in handleIncommingCall:", error);
+    }
+  }, [socket, sendStreams]);
+
+  const handleCallAccepted = useCallback(({ from, ans }) => {
+    try {
+      peer.setLocalDescription(ans);
+      console.log("Call Accepted!");
+      sendStreams(); // Send streams after call is accepted
+    } catch (error) {
+      console.error("Error in handleCallAccepted:", error);
+    }
+  }, [sendStreams]);
+
+  const handleNegoNeeded = useCallback(async () => {
+    try {
+      const offer = await peer.getOffer();
+      socket.emit("peer:nego:needed", { offer, to: remoteSocketId });
+    } catch (error) {
+      console.error("Error in handleNegoNeeded:", error);
+    }
+  }, [remoteSocketId, socket]);
+
+  const handleNegoNeedIncomming = useCallback(async ({ from, offer }) => {
+    try {
+      const ans = await peer.getAnswer(offer);
+      socket.emit("peer:nego:done", { to: from, ans });
+    } catch (error) {
+      console.error("Error in handleNegoNeedIncomming:", error);
+    }
+  }, [socket]);
+
+  const handleNegoNeedFinal = useCallback(async ({ ans }) => {
+    try {
+      await peer.setLocalDescription(ans);
+    } catch (error) {
+      console.error("Error in handleNegoNeedFinal:", error);
+    }
+  }, []);
+
   const handleEndCall = useCallback(() => {
-    myStream?.getTracks().forEach(track => track.stop());
-    setMyStream(null);
-    setRemoteStream(null);
-    peer.peer.close();
-    socket.emit("call:end", { to: remoteSocketId });
+    try {
+      if (myStream) {
+        myStream.getTracks().forEach(track => track.stop());
+      }
+      if (peer.peer) {
+        peer.peer.getSenders().forEach(sender => {
+          peer.peer.removeTrack(sender);
+        });
+      }
+      setMyStream(null);
+      setRemoteStream(null);
+      peer.cleanup();
+      socket.emit("call:end", { to: remoteSocketId });
+    } catch (error) {
+      console.error("Error in handleEndCall:", error);
+    }
   }, [myStream, remoteSocketId, socket]);
 
   const toggleAudio = useCallback(() => {
     if (myStream) {
       const audioTrack = myStream.getAudioTracks()[0];
-      audioTrack.enabled = !audioTrack.enabled;
-      setIsAudioEnabled(audioTrack.enabled);
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        setIsAudioEnabled(audioTrack.enabled);
+      }
     }
   }, [myStream]);
 
   const toggleVideo = useCallback(() => {
     if (myStream) {
       const videoTrack = myStream.getVideoTracks()[0];
-      videoTrack.enabled = !videoTrack.enabled;
-      setIsVideoEnabled(videoTrack.enabled);
+      if (videoTrack) {
+        videoTrack.enabled = !videoTrack.enabled;
+        setIsVideoEnabled(videoTrack.enabled);
+      }
     }
   }, [myStream]);
 
@@ -60,92 +150,55 @@ const RoomPage = () => {
     setTimeout(() => setIsCopied(false), 2000);
   }, [socket.id]);
 
-    const handleIncommingCall = useCallback(
-      async ({ from, offer }) => {
-        setRemoteSocketId(from);
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: true,
-        });
-        setMyStream(stream);
-        console.log(`Incoming Call`, from, offer);
-        const ans = await peer.getAnswer(offer);
-        socket.emit("call:accepted", { to: from, ans });
-      },
-      [socket]
-    );
-  
-    const sendStreams = useCallback(() => {
-      for (const track of myStream.getTracks()) {
-        peer.peer.addTrack(track, myStream);
-      }
-    }, [myStream]);
-  
-    const handleCallAccepted = useCallback(
-      ({ from, ans }) => {
-        peer.setLocalDescription(ans);
-        console.log("Call Accepted!");
-        sendStreams();
-      },
-      [sendStreams]
-    );
-  
-    const handleNegoNeeded = useCallback(async () => {
-      const offer = await peer.getOffer();
-      socket.emit("peer:nego:needed", { offer, to: remoteSocketId });
-    }, [remoteSocketId, socket]);
-  
-    useEffect(() => {
-      peer.peer.addEventListener("negotiationneeded", handleNegoNeeded);
-      return () => {
-        peer.peer.removeEventListener("negotiationneeded", handleNegoNeeded);
-      };
-    }, [handleNegoNeeded]);
-  
-    const handleNegoNeedIncomming = useCallback(
-      async ({ from, offer }) => {
-        const ans = await peer.getAnswer(offer);
-        socket.emit("peer:nego:done", { to: from, ans });
-      },
-      [socket]
-    );
-  
-    const handleNegoNeedFinal = useCallback(async ({ ans }) => {
-      await peer.setLocalDescription(ans);
-    }, []);
-  
-    useEffect(() => {
-      peer.peer.addEventListener("track", async (ev) => {
-        const remoteStream = ev.streams;
-        console.log("GOT TRACKS!!");
-        setRemoteStream(remoteStream[0]);
-      });
-    }, []);
-  
-    useEffect(() => {
-      socket.on("user:joined", handleUserJoined);
-      socket.on("incomming:call", handleIncommingCall);
-      socket.on("call:accepted", handleCallAccepted);
-      socket.on("peer:nego:needed", handleNegoNeedIncomming);
-      socket.on("peer:nego:final", handleNegoNeedFinal);
-  
-      return () => {
-        socket.off("user:joined", handleUserJoined);
-        socket.off("incomming:call", handleIncommingCall);
-        socket.off("call:accepted", handleCallAccepted);
-        socket.off("peer:nego:needed", handleNegoNeedIncomming);
-        socket.off("peer:nego:final", handleNegoNeedFinal);
-      };
-    }, [
-      socket,
-      handleUserJoined,
-      handleIncommingCall,
-      handleCallAccepted,
-      handleNegoNeedIncomming,
-      handleNegoNeedFinal,
-    ]);
-  
+  // Handle remote tracks
+  useEffect(() => {
+    if (!peer.peer) return;
 
+    peer.peer.ontrack = (event) => {
+      const [remoteVideoStream] = event.streams;
+      console.log("Got remote track:", event.track.kind);
+      setRemoteStream(remoteVideoStream);
+    };
+  }, []);
+
+  // Handle negotiation
+  useEffect(() => {
+    if (!peer.peer) return;
+
+    peer.peer.onnegotiationneeded = handleNegoNeeded;
+    return () => {
+      peer.peer.onnegotiationneeded = null;
+    };
+  }, [handleNegoNeeded]);
+
+  // Setup socket listeners
+  useEffect(() => {
+    socket.on("user:joined", handleUserJoined);
+    socket.on("incomming:call", handleIncommingCall);
+    socket.on("call:accepted", handleCallAccepted);
+    socket.on("peer:nego:needed", handleNegoNeedIncomming);
+    socket.on("peer:nego:final", handleNegoNeedFinal);
+    socket.on("call:end", handleEndCall);
+
+    return () => {
+      socket.off("user:joined", handleUserJoined);
+      socket.off("incomming:call", handleIncommingCall);
+      socket.off("call:accepted", handleCallAccepted);
+      socket.off("peer:nego:needed", handleNegoNeedIncomming);
+      socket.off("peer:nego:final", handleNegoNeedFinal);
+      socket.off("call:end", handleEndCall);
+    };
+  }, [
+    socket,
+    handleUserJoined,
+    handleIncommingCall,
+    handleCallAccepted,
+    handleNegoNeedIncomming,
+    handleNegoNeedFinal,
+    handleEndCall,
+  ]);
+
+  // Set room link
   useEffect(() => {
     setRoomLink(`${window.location.origin}/room/${socket.id}`);
   }, [socket.id]);
