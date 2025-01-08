@@ -9,8 +9,8 @@ export const useSocket = () => {
 };
 
 export const SocketProvider = (props) => {
-  const socketUrl = import.meta.env.SOCKET_URL ;
-  const socket = useMemo(() => io( `${socketUrl}`), []);
+  const socketUrl = import.meta.env.VITE_SOCKET_URL ;
+  const socket = useMemo(() => io(`${socketUrl}`), []);
 
   return (
     <SocketContext.Provider value={socket}>
