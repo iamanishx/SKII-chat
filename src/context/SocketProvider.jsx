@@ -9,7 +9,8 @@ export const useSocket = () => {
 };
 
 export const SocketProvider = (props) => {
-  const socket = useMemo(() => io("wss://skii-chat.up.railway.app"), []);
+  const socketUrl = import.meta.env.SOCKET_URL ;
+  const socket = useMemo(() => io( `${socketUrl}`), []);
 
   return (
     <SocketContext.Provider value={socket}>

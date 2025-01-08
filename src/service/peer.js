@@ -5,10 +5,16 @@ class PeerService {
     this.initializePeer();
   }
 
-  initializePeer() {
-    // Using more STUN/TURN servers for better connectivity
-    this.peer = new RTCPeerConnection({
-      iceServers: [
+  async initializePeer() {
+    try {
+      // Get TURN credentials from backend
+      const cred = import.meta.env.VITE_CRED;
+      const credentials = await fetch(`${cred}`).then((res) => 
+        res.json()
+      );
+
+      // Configure ICE servers with both STUN and TURN
+      const iceServers = [
         {
           urls: [
             "stun:stun.l.google.com:19302",
@@ -16,36 +22,53 @@ class PeerService {
             "stun:stun2.l.google.com:19302",
             "stun:stun3.l.google.com:19302",
             "stun:stun4.l.google.com:19302",
+            "stun:stun.cloudflare.com:3478"
           ],
         },
-      ],
-      iceCandidatePoolSize: 10,
-    });
+        {
+          urls: [
+            "turn:turn.cloudflare.com:3478?transport=udp",
+            "turn:turn.cloudflare.com:3478?transport=tcp",
+            "turns:turn.cloudflare.com:5349?transport=tcp",
+          ],
+          username: credentials.username,
+          credential: credentials.credential,
+        },
+      ];
 
-    this.peer.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log("New ICE candidate:", event.candidate);
-      }
-    };
+      this.peer = new RTCPeerConnection({
+        iceServers,
+        iceCandidatePoolSize: 10,
+      });
 
-    this.peer.onconnectionstatechange = () => {
-      console.log("Connection state changed:", this.peer.connectionState);
-      if (this.peer.connectionState === 'failed') {
-        this.initializePeer(); // Reinitialize on failure
-      }
-    };
+      this.peer.onicecandidate = (event) => {
+        if (event.candidate) {
+          console.log("New ICE candidate:", event.candidate);
+        }
+      };
 
-    this.peer.oniceconnectionstatechange = () => {
-      console.log("ICE connection state:", this.peer.iceConnectionState);
-    };
+      this.peer.onconnectionstatechange = () => {
+        console.log("Connection state changed:", this.peer.connectionState);
+        if (this.peer.connectionState === 'failed') {
+          this.initializePeer(); // Reinitialize on failure
+        }
+      };
 
-    this.peer.onnegotiationneeded = () => {
-      console.log("Negotiation needed");
-    };
+      this.peer.oniceconnectionstatechange = () => {
+        console.log("ICE connection state:", this.peer.iceConnectionState);
+      };
 
-    this.peer.ontrack = (event) => {
-      console.log("Track received:", event.track.kind);
-    };
+      this.peer.onnegotiationneeded = () => {
+        console.log("Negotiation needed");
+      };
+
+      this.peer.ontrack = (event) => {
+        console.log("Track received:", event.track.kind);
+      };
+    } catch (error) {
+      console.error("Error initializing peer:", error);
+      throw error;
+    }
   }
 
   async addTracks(stream) {
