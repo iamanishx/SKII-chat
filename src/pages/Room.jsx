@@ -1,8 +1,12 @@
 import React, { useEffect, useCallback, useState } from "react";
 import { useSocket } from "../context/SocketProvider";
 import { Check, Mic, MicOff, Video, VideoOff, Phone, PhoneOff, Copy } from "lucide-react";
+import PeerService from "../service/peer";
 
-const RoomPage = () => {
+
+
+
+ const RoomPage = () => {
   const socket = useSocket();
   const [remoteSocketId, setRemoteSocketId] = useState(null);
   const [myStream, setMyStream] = useState(null);
@@ -20,19 +24,19 @@ const RoomPage = () => {
   const sendStreams = useCallback(() => {
     if (myStream) {
       for (const track of myStream.getTracks()) {
-        const senders = peer.peer.getSenders();
+        const senders = PeerService.peer.getSenders();
         const existingSender = senders.find((sender) => sender.track?.kind === track.kind);
         if (existingSender) {
           console.log(`Replacing track: ${track.kind}`);
           existingSender.replaceTrack(track);
         } else {
           console.log(`Adding track: ${track.kind}`);
-          peer.peer.addTrack(track, myStream);
+          PeerService.peer.addTrack(track, myStream);
         }
       }
     }
   }, [myStream]);
-
+  
   const handleCallUser = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
