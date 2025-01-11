@@ -1,13 +1,12 @@
 import React, { useEffect, useCallback, useState } from "react";
+import { useParams } from "react-router-dom";
 import { useSocket } from "../context/SocketProvider";
 import { Check, Mic, MicOff, Video, VideoOff, Phone, PhoneOff, Copy } from "lucide-react";
 import PeerService from "../service/peer";
 
-
-
-
- const RoomPage = () => {
+const RoomPage = () => {
   const socket = useSocket();
+  const { room } = useParams();
   const [remoteSocketId, setRemoteSocketId] = useState(null);
   const [myStream, setMyStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
@@ -15,108 +14,139 @@ import PeerService from "../service/peer";
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [roomLink, setRoomLink] = useState("");
   const [isCopied, setIsCopied] = useState(false);
+  const [isCallInProgress, setIsCallInProgress] = useState(false);
 
-  const handleUserJoined = useCallback(({ email, id }) => {
-    console.log(`Email ${email} joined room`);
-    setRemoteSocketId(id);
-  }, []);
-
-  const sendStreams = useCallback(() => {
-    if (myStream) {
-      for (const track of myStream.getTracks()) {
-        const senders = PeerService.peer.getSenders();
-        const existingSender = senders.find((sender) => sender.track?.kind === track.kind);
-        if (existingSender) {
-          console.log(`Replacing track: ${track.kind}`);
-          existingSender.replaceTrack(track);
-        } else {
-          console.log(`Adding track: ${track.kind}`);
-          PeerService.peer.addTrack(track, myStream);
-        }
-      }
+  // Initialize room and socket connection
+  useEffect(() => {
+    if (socket && room) {
+      console.log(`Joining room: ${room}`);
+      socket.emit("room:join", { room });
+      PeerService.setSocket(socket);
+      setRoomLink(`${window.location}`);
     }
-  }, [myStream]);
+  }, [socket, room]);
   
+  // Function to initialize the local media stream
+  const initializeLocalStream = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: true
+      });
+      setMyStream(stream);
+      return stream;
+    } catch (error) {
+      console.error("Error accessing media devices:", error);
+      throw error;
+    }
+  };
+
+  // Handle user joined event
+  const handleUserJoined = useCallback(({ id, room: joinedRoom }) => {
+    console.log(`User ${id} joined room ${joinedRoom}`);
+    if (joinedRoom === room) { // Only set remote ID if it's the same room
+      setRemoteSocketId(id);
+    }
+  }, [room]);
+
+  // Send local tracks to the peer connection
+  const sendStreams = useCallback(() => {
+    if (!myStream || !PeerService.peer) return;
+    myStream.getTracks().forEach((track) => {
+      const senders = PeerService.peer.getSenders();
+      const existingSender = senders.find((sender) => sender.track?.kind === track.kind);
+      if (existingSender) {
+        existingSender.replaceTrack(track);
+      } else {
+        PeerService.peer.addTrack(track, myStream);
+      }
+    });
+  }, [myStream]);
+
+  // Handle making a call
   const handleCallUser = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-      setMyStream(stream);
-
-      // Attach local stream tracks to the peer connection
-      for (const track of stream.getTracks()) {
-        peer.peer.addTrack(track, stream);
-      }
-
-      const offer = await peer.getOffer();
-      socket.emit("user:call", { to: remoteSocketId, offer });
+      const stream = await initializeLocalStream();
+      await PeerService.initializePeer(room); // Use the actual room ID
+      await PeerService.addTracks(stream);
+      const offer = await PeerService.createOffer();
+      socket.emit("user:call", { to: remoteSocketId, offer, room }); // Include room
+      setIsCallInProgress(true);
+      console.log(`Initiating call in room ${room} to:`, remoteSocketId);
     } catch (error) {
       console.error("Error in handleCallUser:", error);
+      setIsCallInProgress(false);
     }
-  }, [remoteSocketId, socket]);
-
+  }, [remoteSocketId, room, socket]);
+  
+  // Handle incoming call
   const handleIncomingCall = useCallback(async ({ from, offer }) => {
     try {
       setRemoteSocketId(from);
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-      setMyStream(stream);
-
-      for (const track of stream.getTracks()) {
-        peer.peer.addTrack(track, stream);
-      }
-
-      const answer = await peer.getAnswer(offer);
+      const stream = await initializeLocalStream();
+      await PeerService.initializePeer(room);
+      await PeerService.addTracks(stream);
+      const answer = await PeerService.createAnswer(offer);
       socket.emit("call:accepted", { to: from, answer });
+      setIsCallInProgress(true);
     } catch (error) {
       console.error("Error in handleIncomingCall:", error);
+      setIsCallInProgress(false);
     }
-  }, [socket]);
+  }, [socket, room]);
 
+  // Handle call accepted
   const handleCallAccepted = useCallback(({ answer }) => {
     try {
-      peer.setLocalDescription(answer);
-      console.log("Call Accepted!");
+      PeerService.setRemoteDescription(answer);
       sendStreams();
     } catch (error) {
       console.error("Error in handleCallAccepted:", error);
     }
   }, [sendStreams]);
 
+  // Handle negotiation needed
   const handleNegotiationNeeded = useCallback(async () => {
     try {
-      const offer = await peer.getOffer();
+      const offer = await PeerService.createOffer();
       socket.emit("peer:nego:needed", { offer, to: remoteSocketId });
     } catch (error) {
       console.error("Error in handleNegotiationNeeded:", error);
     }
   }, [remoteSocketId, socket]);
 
+  // Handle incoming negotiation
   const handleNegotiationIncoming = useCallback(async ({ from, offer }) => {
     try {
-      const answer = await peer.getAnswer(offer);
+      const answer = await PeerService.getAnswer(offer);
       socket.emit("peer:nego:done", { to: from, answer });
     } catch (error) {
       console.error("Error in handleNegotiationIncoming:", error);
     }
   }, [socket]);
 
+  // Handle final negotiation
   const handleNegotiationFinal = useCallback(async ({ answer }) => {
     try {
-      await peer.setLocalDescription(answer);
+      await PeerService.setLocalDescription(answer);
     } catch (error) {
       console.error("Error in handleNegotiationFinal:", error);
     }
   }, []);
 
+  // Handle ending a call
   const handleEndCall = useCallback(() => {
     if (myStream) {
       myStream.getTracks().forEach((track) => track.stop());
     }
-    peer.cleanup();
+    PeerService.cleanup();
     setMyStream(null);
     setRemoteStream(null);
+    setIsCallInProgress(false);
     socket.emit("call:end", { to: remoteSocketId });
   }, [myStream, remoteSocketId, socket]);
 
+  // Toggle audio
   const toggleAudio = useCallback(() => {
     if (myStream) {
       const audioTrack = myStream.getAudioTracks()[0];
@@ -127,6 +157,7 @@ import PeerService from "../service/peer";
     }
   }, [myStream]);
 
+  // Toggle video
   const toggleVideo = useCallback(() => {
     if (myStream) {
       const videoTrack = myStream.getVideoTracks()[0];
@@ -137,41 +168,21 @@ import PeerService from "../service/peer";
     }
   }, [myStream]);
 
+  // Copy room link
   const copyRoomLink = useCallback(() => {
-    const link = `${window.location.origin}/room/${socket.id}`;
-    navigator.clipboard.writeText(link);
+    navigator.clipboard.writeText(roomLink);
     setIsCopied(true);
     setTimeout(() => setIsCopied(false), 2000);
-  }, [socket.id]);
+  }, [roomLink]);
 
-  // Handle remote tracks
-  useEffect(() => {
-    if (!peer.peer) return;
-
-    peer.peer.ontrack = (event) => {
-      const [remoteVideoStream] = event.streams;
-      console.log("Received remote track:", event.track.kind);
-      setRemoteStream(remoteVideoStream);
-    };
-  }, []);
-
-  // Handle negotiation
-  useEffect(() => {
-    if (!peer.peer) return;
-
-    peer.peer.onnegotiationneeded = handleNegotiationNeeded;
-    return () => {
-      peer.peer.onnegotiationneeded = null;
-    };
-  }, [handleNegotiationNeeded]);
-
-  // Setup socket listeners
+  // Set up event listeners
   useEffect(() => {
     socket.on("user:joined", handleUserJoined);
     socket.on("incoming:call", handleIncomingCall);
     socket.on("call:accepted", handleCallAccepted);
     socket.on("peer:nego:needed", handleNegotiationIncoming);
     socket.on("peer:nego:final", handleNegotiationFinal);
+    socket.on("call:ended", handleEndCall);
 
     return () => {
       socket.off("user:joined", handleUserJoined);
@@ -179,21 +190,48 @@ import PeerService from "../service/peer";
       socket.off("call:accepted", handleCallAccepted);
       socket.off("peer:nego:needed", handleNegotiationIncoming);
       socket.off("peer:nego:final", handleNegotiationFinal);
+      socket.off("call:ended", handleEndCall);
     };
-  }, [socket, handleUserJoined, handleIncomingCall, handleCallAccepted, handleNegotiationIncoming, handleNegotiationFinal]);
+  }, [
+    socket,
+    handleUserJoined,
+    handleIncomingCall,
+    handleCallAccepted,
+    handleNegotiationIncoming,
+    handleNegotiationFinal,
+    handleEndCall,
+  ]);
 
-  // Set room link
+  // Handle remote stream
   useEffect(() => {
-    setRoomLink(`${window.location.origin}/room/${socket.id}`);
+    if (!PeerService.peer) return;
+
+    const handleTrack = (event) => {
+      const [remoteVideoStream] = event.streams;
+      setRemoteStream(remoteVideoStream);
+    };
+
+    PeerService.peer.ontrack = handleTrack;
+
+    return () => {
+      if (PeerService.peer) {
+        PeerService.peer.ontrack = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setRoomLink(`${window.location}`);
   }, [socket.id]);
 
+  
   return (
     <div className="min-h-screen bg-gray-100 p-8">
       <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-lg p-6">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-bold text-gray-800">Video Chat Room</h1>
           <div className="flex items-center gap-2">
-            <input
+          <input
               type="text"
               value={roomLink}
               readOnly
