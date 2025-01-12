@@ -68,13 +68,17 @@ class PeerService {
 
   async setRemoteDescription(answer) {
     try {
+      if (this.peer.signalingState === 'stable') {
+        console.warn("Skipping redundant setRemoteDescription: Connection already stable.");
+        return;
+      }
       await this.peer.setRemoteDescription(new RTCSessionDescription(answer));
     } catch (error) {
       console.error('Error setting remote description:', error);
       await this.handleConnectionFailure();
     }
   }
-
+  
   async initializePeer(roomId) {
     this.cleanup();
     this.roomId = roomId;
