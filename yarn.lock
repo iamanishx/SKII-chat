@@ -1376,6 +1376,14 @@ esutils@^2.0.2:
   resolved "https://registry.yarnpkg.com/esutils/-/esutils-2.0.3.tgz#74d2eb4de0b8da1293711910d50775b9b710ef64"
   integrity sha512-kVscqXk4OCp68SZ0dkgEKVi6/8ij300KBWTJq32P/dYeWTSwK41WyTxalN1eRmA5Z9UU/LX9D7FWSmV9SAYx6g==
 
+event@^1.0.0:
+  version "1.0.0"
+  resolved "https://registry.yarnpkg.com/event/-/event-1.0.0.tgz#b51232b67ad4e0fe38c4a8cbaff2ff8685278ce3"
+  integrity sha512-/q6sbFBp32KzPv3nDAt3eio279pruEGP8JSvDpdHy7dhuQAYW1pvaDMq+vKm8+JS8PO5erorCP71sMpStZErgA==
+  dependencies:
+    method "~1.0.0"
+    reducible "~1.0.1"
+
 eventemitter3@^4.0.7:
   version "4.0.7"
   resolved "https://registry.yarnpkg.com/eventemitter3/-/eventemitter3-4.0.7.tgz#2de9b68f6528d5644ef5c59526a1b4a07306169f"
@@ -2008,6 +2016,16 @@ merge2@^1.3.0:
   resolved "https://registry.yarnpkg.com/merge2/-/merge2-1.4.1.tgz#4368892f885e907455a6fd7dc55c0c9d404990ae"
   integrity sha512-8q7VEgMJW4J8tcfVPy8g09NcQwZdbwFEqhe/WZkoIzjn/3TGDwtOCYtXGxA3O8tPzpczCCDgv+P2P5y00ZJOOg==
 
+method@~1.0.0:
+  version "1.0.2"
+  resolved "https://registry.yarnpkg.com/method/-/method-1.0.2.tgz#291f8c29ee443847a2f8906f89fbaa372d4d0916"
+  integrity sha512-0BxVo2fPZK1gOfbQ7V8MWyiNLB+8dv8rREcOeQHnZdPZgUbdzXUUiqPszm8DY8sTk1ewWyloU6QSMUwF5+jc6Q==
+
+method@~2.0.x:
+  version "2.0.0"
+  resolved "https://registry.yarnpkg.com/method/-/method-2.0.0.tgz#e449848defa6daef10b8163d9d9aa2d071b7500f"
+  integrity sha512-JqK3SsKDlfW1+6HzlDcpsOBPyEA+gzKUN/3OG3yc6mvbcF/OyKd+OVJRht4TFABOpXV6IQVcc2kt1u5fWNjFCg==
+
 micromatch@^4.0.4, micromatch@^4.0.8:
   version "4.0.8"
   resolved "https://registry.yarnpkg.com/micromatch/-/micromatch-4.0.8.tgz#d66fa18f3a47076789320b9b1af32bd86d9fa202"
@@ -2401,6 +2419,13 @@ readdirp@~3.6.0:
   integrity sha512-hOS089on8RduqdbhvQ5Z37A0ESjsqz6qnRcffsMU3495FuTdqSm+7bhJ29JvIOsBDEEnan5DPu9t3To9VRlMzA==
   dependencies:
     picomatch "^2.2.1"
+
+reducible@~1.0.1:
+  version "1.0.6"
+  resolved "https://registry.yarnpkg.com/reducible/-/reducible-1.0.6.tgz#331722d14189f8f392dc9b88341aec603b25c35e"
+  integrity sha512-sH74nXS0dz8nQ4qtDpolj9u2nOwoyIg0f8+TQM1bHllTQw95e9hGSBq5Dn0nFTXkJ1VEJ5rTb2UazDhN+KXX9Q==
+  dependencies:
+    method "~2.0.x"
 
 reflect.getprototypeof@^1.0.6, reflect.getprototypeof@^1.0.8, reflect.getprototypeof@^1.0.9:
   version "1.0.9"

@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "event": "^1.0.0",
     "gitignore": "^0.7.0",
     "init": "^0.1.2",
     "lucide-react": "^0.469.0",
