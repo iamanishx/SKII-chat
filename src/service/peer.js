@@ -117,17 +117,22 @@ class PeerService extends EventEmitter {
 
   async initializeWithStun() {
     try {
-      const iceServers = [
-        {
-          urls: [
-            'stun:stun1.l.google.com:19302',
-            'stun:stun2.l.google.com:19302',
-            'stun:stun.stunprotocol.org:3478',
-            'stun:stun.voiparound.com'
-          ]
-        }
-      ];
-      await this.createPeerConnection({ iceServers });
+      const config = {
+        iceServers: [
+          {
+            urls: [
+              'stun:stun1.l.google.com:19302',
+              'stun:stun2.l.google.com:19302',
+              'stun:stun.stunprotocol.org:3478',
+              'stun:stun.voiparound.com'
+            ]
+          }
+        ],
+        iceCandidatePoolSize: 10,
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require'
+      };
+      await this.createPeerConnection(config);
       console.log('STUN-based peer connection initialized successfully.');
     } catch (error) {
       console.error('Error initializing STUN connection:', error);
@@ -142,11 +147,9 @@ class PeerService extends EventEmitter {
   
   async initializeWithTurn() {
     try {
-      // Add error handling for the fetch
       const response = await fetch(import.meta.env.VITE_CRED, {
         headers: {
-          'Accept': 'application/json',
-          // Add any required authentication headers here
+          'Accept': 'application/json'
         }
       });
       
@@ -162,51 +165,51 @@ class PeerService extends EventEmitter {
         throw new Error(`Invalid JSON response from TURN server: ${await response.text()}`);
       }
   
-      // Validate the response structure
-      if (!credentials || !credentials.urls || !credentials.username || !credentials.credential) {
-        throw new Error('Invalid TURN server credentials format');
+      // Validate Cloudflare credentials format
+      if (!credentials?.urls?.length || !credentials.username || !credentials.credential) {
+        throw new Error('Invalid Cloudflare TURN credentials format');
       }
   
-      const iceServers = [
-        {
-          urls: [
-            'stun:stun1.l.google.com:19302',
-            'stun:stun2.l.google.com:19302'
-          ]
-        },
-        {
-          urls: credentials.urls,
-          username: credentials.username,
-          credential: credentials.credential
-        }
-      ];
+      // Create config with Cloudflare credentials
+      const config = {
+        iceServers: [
+          // Include Cloudflare's combined STUN/TURN configuration
+          {
+            urls: credentials.urls,
+            username: credentials.username,
+            credential: credentials.credential
+          }
+        ],
+        iceCandidatePoolSize: 10,
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require'
+      };
   
-      await this.createPeerConnection({ iceServers });
-      console.log('TURN-based peer connection initialized successfully.');
+      await this.createPeerConnection(config);
+      console.log('TURN-based peer connection initialized successfully with Cloudflare.');
     } catch (error) {
-      console.error('Error initializing TURN connection:', error);
+      console.error('Error initializing Cloudflare TURN connection:', error);
       this.emit('error', {
         type: 'turn',
-        message: 'Failed to initialize TURN connection',
+        message: 'Failed to initialize Cloudflare TURN connection',
         error,
       });
       throw error;
     }
   }
-
-
-  async createPeerConnection(iceServers) {
-    const config = {
-      iceServers,
-      iceCandidatePoolSize: 10,
-      bundlePolicy: 'max-bundle',
-      rtcpMuxPolicy: 'require'
-    };
-
+  
+  async createPeerConnection(config) {
+    if (!config?.iceServers?.length) {
+      throw new Error('Invalid configuration: iceServers array is required');
+    }
+  
+    // Log the configuration for debugging
+    console.log('Creating peer connection with config:', JSON.stringify(config, null, 2));
+  
     this.peer = new RTCPeerConnection(config);
     this.setupPeerEvents();
   }
-
+  
   setupPeerEvents() {
     if (!this.peer) return;
 
