@@ -11,6 +11,8 @@ class PeerService extends EventEmitter {
     this.reconnectDelay = 1000; // Initial delay for reconnection (ms)
     this.senders = new Map();
     this.isReconnecting = false;
+    this.pendingCandidates = []; // Initialize pendingCandidates array
+
   }
 
   setSocket(socket) {
@@ -27,14 +29,24 @@ class PeerService extends EventEmitter {
   }
 
   async addIceCandidate(candidate) {
-    if (this.peer) {
-      try {
+    try {
+      if (this.peer?.remoteDescription && this.peer?.remoteDescription.type) {
         await this.peer.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch (error) {
-        this.emit('error', { type: 'ice-candidate', message: 'Error adding ICE candidate', error });
+        console.log('Added ICE candidate successfully');
+      } else {
+        this.pendingCandidates.push(candidate);
+        console.log('Stored ICE candidate for later');
       }
+    } catch (error) {
+      console.error('Error adding ICE candidate:', error);
+      this.emit('error', { 
+        type: 'ice-candidate', 
+        message: 'Error adding ICE candidate', 
+        error 
+      });
     }
   }
+
 
   async createOffer() {
     if (!this.peer) throw new Error('No peer connection available');
@@ -71,16 +83,19 @@ class PeerService extends EventEmitter {
 
     try {
       const currentState = this.peer.signalingState;
+      console.log('Current signaling state:', currentState);
 
       if (currentState === 'have-local-offer') {
         await this.peer.setRemoteDescription(new RTCSessionDescription(answer));
+        console.log('Remote description set successfully');
 
-        // Add any pending ICE candidates after setting remote description
-        while (this.pendingCandidates.length) {
-          await this.addIceCandidate(this.pendingCandidates.shift());
+        // Process any pending ICE candidates
+        while (this.pendingCandidates && this.pendingCandidates.length > 0) {
+          const candidate = this.pendingCandidates.shift();
+          await this.addIceCandidate(candidate);
         }
       } else if (currentState === 'stable') {
-        console.warn('Peer connection is already stable, ignoring remote description');
+        console.warn('Connection is already stable, ignoring remote description');
         return;
       } else {
         console.warn(`Unexpected signaling state: ${currentState}`);
@@ -97,6 +112,7 @@ class PeerService extends EventEmitter {
       await this.handleConnectionFailure();
     }
   }
+
 
   async initializePeer(roomId) {
     this.cleanup();
@@ -209,12 +225,13 @@ class PeerService extends EventEmitter {
     this.peer = new RTCPeerConnection(config);
     this.setupPeerEvents();
   }
-  
+
   setupPeerEvents() {
     if (!this.peer) return;
 
     this.peer.onicecandidate = ({ candidate }) => {
       if (candidate && this.roomId) {
+        console.log('Sending ICE candidate:', candidate);
         this.socket?.emit('peer:ice-candidate', {
           candidate,
           to: this.roomId
@@ -223,8 +240,13 @@ class PeerService extends EventEmitter {
     };
 
     this.peer.ontrack = (event) => {
-      const remoteStream = event.streams[0];
-      this.emit('remoteStream', { stream: remoteStream, roomId: this.roomId });
+      console.log('Received remote track:', event.streams[0]);
+      if (event.streams && event.streams[0]) {
+        this.emit('remoteStream', { 
+          stream: event.streams[0], 
+          roomId: this.roomId 
+        });
+      }
     };
 
     this.peer.onconnectionstatechange = () => {
@@ -234,17 +256,23 @@ class PeerService extends EventEmitter {
       if (state === 'connected') {
         this.reconnectAttempts = 0;
         this.isReconnecting = false;
+        console.log('Peer connection established successfully');
       } else if (['disconnected', 'failed'].includes(state) && !this.isReconnecting) {
+        console.log('Connection state failure:', state);
         this.handleConnectionFailure();
       }
     };
 
-    this.peer.onsignalingstatechange = () => {
-      console.log('Signaling state changed:', this.peer?.signalingState);
-    };
-
     this.peer.oniceconnectionstatechange = () => {
       console.log('ICE connection state:', this.peer?.iceConnectionState);
+      if (this.peer?.iceConnectionState === 'failed') {
+        console.log('ICE connection failed - attempting recovery');
+        this.handleConnectionFailure();
+      }
+    };
+
+    this.peer.onicegatheringstatechange = () => {
+      console.log('ICE gathering state:', this.peer?.iceGatheringState);
     };
   }
   async handleConnectionFailure() {
@@ -276,15 +304,33 @@ class PeerService extends EventEmitter {
     if (!this.peer || !stream) return;
 
     try {
-      this.senders.forEach(sender => this.peer.removeTrack(sender));
+      // Remove existing tracks
+      this.senders.forEach(sender => {
+        try {
+          this.peer.removeTrack(sender);
+        } catch (e) {
+          console.warn('Error removing track:', e);
+        }
+      });
       this.senders.clear();
 
+      // Add new tracks
       stream.getTracks().forEach((track) => {
-        const sender = this.peer.addTrack(track, stream);
-        this.senders.set(track.kind, sender);
+        console.log('Adding track to peer connection:', track.kind);
+        try {
+          const sender = this.peer.addTrack(track, stream);
+          this.senders.set(track.kind, sender);
+        } catch (e) {
+          console.error('Error adding track:', e);
+        }
       });
     } catch (error) {
-      this.emit('error', { type: 'add-tracks', message: 'Error adding tracks', error });
+      console.error('Error managing tracks:', error);
+      this.emit('error', { 
+        type: 'add-tracks', 
+        message: 'Error adding tracks', 
+        error 
+      });
     }
   }
 
