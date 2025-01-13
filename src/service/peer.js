@@ -1,11 +1,16 @@
-class PeerService {
+import EventEmitter from 'events'; // For event-based notifications
+
+class PeerService extends EventEmitter {
   constructor() {
+    super();
     this.peer = null;
     this.roomId = null;
     this.socket = null;
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 3;
+    this.maxReconnectAttempts = 5;
+    this.reconnectDelay = 1000; // Initial delay for reconnection (ms)
     this.senders = new Map();
+    this.isReconnecting = false;
   }
 
   setSocket(socket) {
@@ -21,22 +26,12 @@ class PeerService {
     });
   }
 
-  sendToPeer(message) {
-    if (!this.socket || !this.roomId) return console.error('Socket or roomId not available');
-    try {
-      console.log("Sending message:", message.type, "to room:", this.roomId);
-      this.socket.emit(`peer:${message.type}`, { to: this.roomId, ...message });
-    } catch (error) {
-      console.error('Error sending message to peer:', error);
-    }
-  }
-
   async addIceCandidate(candidate) {
     if (this.peer) {
       try {
         await this.peer.addIceCandidate(new RTCIceCandidate(candidate));
       } catch (error) {
-        console.error('Error adding ICE candidate:', error);
+        this.emit('error', { type: 'ice-candidate', message: 'Error adding ICE candidate', error });
       }
     }
   }
@@ -44,11 +39,15 @@ class PeerService {
   async createOffer() {
     if (!this.peer) throw new Error('No peer connection available');
     try {
-      const offer = await this.peer.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+      await this.waitForStableState();
+      const offer = await this.peer.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true
+      });
       await this.peer.setLocalDescription(offer);
       return this.peer.localDescription;
     } catch (error) {
-      console.error('Error creating offer:', error);
+      this.emit('error', { type: 'offer', message: 'Error creating offer', error });
       await this.handleConnectionFailure();
     }
   }
@@ -56,33 +55,54 @@ class PeerService {
   async createAnswer(offer) {
     if (!this.peer) throw new Error('No peer connection available');
     try {
+      await this.waitForStableState();
       await this.peer.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await this.peer.createAnswer();
       await this.peer.setLocalDescription(new RTCSessionDescription(answer));
       return this.peer.localDescription;
     } catch (error) {
-      console.error('Error creating answer:', error);
+      this.emit('error', { type: 'answer', message: 'Error creating answer', error });
       await this.handleConnectionFailure();
     }
   }
 
   async setRemoteDescription(answer) {
+    if (!this.peer) return;
+
     try {
-      if (this.peer.signalingState === 'stable') {
-        console.warn("Skipping redundant setRemoteDescription: Connection already stable.");
+      const currentState = this.peer.signalingState;
+
+      if (currentState === 'have-local-offer') {
+        await this.peer.setRemoteDescription(new RTCSessionDescription(answer));
+
+        // Add any pending ICE candidates after setting remote description
+        while (this.pendingCandidates.length) {
+          await this.addIceCandidate(this.pendingCandidates.shift());
+        }
+      } else if (currentState === 'stable') {
+        console.warn('Peer connection is already stable, ignoring remote description');
         return;
+      } else {
+        console.warn(`Unexpected signaling state: ${currentState}`);
+        await this.waitForStableState();
+        await this.peer.setRemoteDescription(new RTCSessionDescription(answer));
       }
-      await this.peer.setRemoteDescription(new RTCSessionDescription(answer));
     } catch (error) {
       console.error('Error setting remote description:', error);
+      this.emit('error', {
+        type: 'remote-description',
+        message: 'Connection failed. Please try again.',
+        error
+      });
       await this.handleConnectionFailure();
     }
   }
-  
+
   async initializePeer(roomId) {
     this.cleanup();
     this.roomId = roomId;
     this.reconnectAttempts = 0;
+    this.isReconnecting = false;
     await this.initializeConnection();
   }
 
@@ -96,24 +116,94 @@ class PeerService {
   }
 
   async initializeWithStun() {
-    const iceServers = [{ urls: ['stun:stun.l.google.com:19302'] }];
-    await this.createPeerConnection(iceServers);
+    try {
+      const iceServers = [
+        {
+          urls: [
+            'stun:stun1.l.google.com:19302',
+            'stun:stun2.l.google.com:19302',
+            'stun:stun.stunprotocol.org:3478',
+            'stun:stun.voiparound.com'
+          ]
+        }
+      ];
+      await this.createPeerConnection({ iceServers });
+      console.log('STUN-based peer connection initialized successfully.');
+    } catch (error) {
+      console.error('Error initializing STUN connection:', error);
+      this.emit('error', {
+        type: 'stun',
+        message: 'Failed to initialize STUN connection',
+        error,
+      });
+      throw error;
+    }
   }
-
+  
   async initializeWithTurn() {
     try {
-      const response = await fetch(import.meta.env.VITE_CLOUDFLARE_TURN_URL);
-      const credentials = await response.json();
-      const iceServers = [{ urls: credentials.urls, username: credentials.username, credential: credentials.credential }];
-      await this.createPeerConnection(iceServers);
+      // Add error handling for the fetch
+      const response = await fetch(import.meta.env.VITE_CRED, {
+        headers: {
+          'Accept': 'application/json',
+          // Add any required authentication headers here
+        }
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to fetch TURN credentials: ${response.status} ${response.statusText}\n${errorText}`);
+      }
+  
+      let credentials;
+      try {
+        credentials = await response.json();
+      } catch (e) {
+        throw new Error(`Invalid JSON response from TURN server: ${await response.text()}`);
+      }
+  
+      // Validate the response structure
+      if (!credentials || !credentials.urls || !credentials.username || !credentials.credential) {
+        throw new Error('Invalid TURN server credentials format');
+      }
+  
+      const iceServers = [
+        {
+          urls: [
+            'stun:stun1.l.google.com:19302',
+            'stun:stun2.l.google.com:19302'
+          ]
+        },
+        {
+          urls: credentials.urls,
+          username: credentials.username,
+          credential: credentials.credential
+        }
+      ];
+  
+      await this.createPeerConnection({ iceServers });
+      console.log('TURN-based peer connection initialized successfully.');
     } catch (error) {
-      console.error('Failed to initialize TURN connection:', error);
+      console.error('Error initializing TURN connection:', error);
+      this.emit('error', {
+        type: 'turn',
+        message: 'Failed to initialize TURN connection',
+        error,
+      });
       throw error;
     }
   }
 
+
   async createPeerConnection(iceServers) {
-    this.peer = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 10 });
+    const config = {
+      iceServers,
+      iceCandidatePoolSize: 10,
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require'
+    };
+
+    this.peer = new RTCPeerConnection(config);
     this.setupPeerEvents();
   }
 
@@ -121,39 +211,62 @@ class PeerService {
     if (!this.peer) return;
 
     this.peer.onicecandidate = ({ candidate }) => {
-      if (candidate && this.roomId) this.sendToPeer({ type: 'candidate', candidate });
+      if (candidate && this.roomId) {
+        this.socket?.emit('peer:ice-candidate', {
+          candidate,
+          to: this.roomId
+        });
+      }
     };
 
     this.peer.ontrack = (event) => {
       const remoteStream = event.streams[0];
-      window.dispatchEvent(new CustomEvent('remoteStream', { detail: { stream: remoteStream, roomId: this.roomId } }));
+      this.emit('remoteStream', { stream: remoteStream, roomId: this.roomId });
     };
 
     this.peer.onconnectionstatechange = () => {
-      console.log('Connection state changed:', this.peer.connectionState);
-      if (this.peer.connectionState === 'disconnected' || this.peer.connectionState === 'failed') {
+      const state = this.peer?.connectionState;
+      console.log('Connection state changed:', state);
+
+      if (state === 'connected') {
+        this.reconnectAttempts = 0;
+        this.isReconnecting = false;
+      } else if (['disconnected', 'failed'].includes(state) && !this.isReconnecting) {
         this.handleConnectionFailure();
       }
     };
-  }
 
+    this.peer.onsignalingstatechange = () => {
+      console.log('Signaling state changed:', this.peer?.signalingState);
+    };
+
+    this.peer.oniceconnectionstatechange = () => {
+      console.log('ICE connection state:', this.peer?.iceConnectionState);
+    };
+  }
   async handleConnectionFailure() {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('Max reconnection attempts reached');
+    if (this.isReconnecting || this.reconnectAttempts >= this.maxReconnectAttempts) {
+      this.emit('error', { type: 'reconnect', message: 'Max reconnection attempts reached' });
       this.cleanup();
       return;
     }
 
-    if (this.peer?.iceConnectionState === 'failed') {
-      console.log('Connection failed, attempting reconnect');
-      this.reconnectAttempts++;
+    this.isReconnecting = true;
+    this.reconnectAttempts++;
+    const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1); // Exponential backoff
+    console.log(`Reconnection attempt ${this.reconnectAttempts} in ${delay}ms`);
+
+    setTimeout(async () => {
       try {
         await this.initializeWithTurn();
         if (this.roomId) await this.createOffer();
+        this.isReconnecting = false;
       } catch (error) {
         console.error('Reconnection attempt failed:', error);
+        this.isReconnecting = false;
+        this.handleConnectionFailure();
       }
-    }
+    }, delay);
   }
 
   async addTracks(stream) {
@@ -168,9 +281,35 @@ class PeerService {
         this.senders.set(track.kind, sender);
       });
     } catch (error) {
-      console.error('Error adding tracks:', error);
+      this.emit('error', { type: 'add-tracks', message: 'Error adding tracks', error });
     }
   }
+
+  async switchMediaSource(newStream) {
+    if (!this.peer) {
+      console.error('No peer connection available');
+      return;
+    }
+
+    this.addTracks(newStream);
+    this.emit('media-source-switched', { newStream });
+  }
+
+  async waitForStableState() {
+    if (!this.peer || this.peer.signalingState === 'stable') return;
+
+    return new Promise((resolve) => {
+      const checkState = () => {
+        if (!this.peer || this.peer.signalingState === 'stable') {
+          resolve();
+        } else {
+          setTimeout(checkState, 100);
+        }
+      };
+      checkState();
+    });
+  }
+
 
   cleanup() {
     if (this.peer) {

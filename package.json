@@ -13,6 +13,7 @@
     "gitignore": "^0.7.0",
     "init": "^0.1.2",
     "lucide-react": "^0.469.0",
+    "peerjs": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-player": "^2.16.0",

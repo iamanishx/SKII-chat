@@ -1,7 +1,8 @@
 import React, { useEffect, useCallback, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useSocket } from "../context/SocketProvider";
-import { Check, Mic, MicOff, Video, VideoOff, Phone, PhoneOff, Copy } from "lucide-react";
+import { Check, Mic, MicOff, Video, VideoOff, Phone, PhoneOff, Copy, AlertCircle } from "lucide-react";
+import { Alert, AlertDescription } from "../assets/ui/alert";
 import PeerService from "../service/peer";
 
 const RoomPage = () => {
@@ -15,6 +16,7 @@ const RoomPage = () => {
   const [roomLink, setRoomLink] = useState("");
   const [isCopied, setIsCopied] = useState(false);
   const [isCallInProgress, setIsCallInProgress] = useState(false);
+  const [error, setError] = useState(null);
 
   // Initialize room and socket connection
   useEffect(() => {
@@ -24,118 +26,31 @@ const RoomPage = () => {
       PeerService.setSocket(socket);
       setRoomLink(`${window.location}`);
     }
+    
+    // Cleanup function
+    return () => {
+      cleanupStreams();
+    };
   }, [socket, room]);
-  
-  // Function to initialize the local media stream
-  const initializeLocalStream = async () => {
+
+  // Initialize local stream with error handling
+  const initializeLocalStream = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
-        video: true
+        video: true,
       });
       setMyStream(stream);
       return stream;
     } catch (error) {
       console.error("Error accessing media devices:", error);
+      setError("Failed to access camera and microphone. Please check your permissions.");
       throw error;
-    }
-  };
-
-  // Handle user joined event
-  const handleUserJoined = useCallback(({ id, room: joinedRoom }) => {
-    console.log(`User ${id} joined room ${joinedRoom}`);
-    if (joinedRoom === room) { // Only set remote ID if it's the same room
-      setRemoteSocketId(id);
-    }
-  }, [room]);
-
-  // Send local tracks to the peer connection
-  const sendStreams = useCallback(() => {
-    if (!myStream || !PeerService.peer) return;
-    myStream.getTracks().forEach((track) => {
-      const senders = PeerService.peer.getSenders();
-      const existingSender = senders.find((sender) => sender.track?.kind === track.kind);
-      if (existingSender) {
-        existingSender.replaceTrack(track);
-      } else {
-        PeerService.peer.addTrack(track, myStream);
-      }
-    });
-  }, [myStream]);
-
-  // Handle making a call
-  const handleCallUser = useCallback(async () => {
-    try {
-      const stream = await initializeLocalStream();
-      await PeerService.initializePeer(room); // Use the actual room ID
-      await PeerService.addTracks(stream);
-      const offer = await PeerService.createOffer();
-      socket.emit("user:call", { to: remoteSocketId, offer, room }); // Include room
-      setIsCallInProgress(true);
-      console.log(`Initiating call in room ${room} to:`, remoteSocketId);
-    } catch (error) {
-      console.error("Error in handleCallUser:", error);
-      setIsCallInProgress(false);
-    }
-  }, [remoteSocketId, room, socket]);
-  
-  // Handle incoming call
-  const handleIncomingCall = useCallback(async ({ from, offer }) => {
-    try {
-      setRemoteSocketId(from);
-      const stream = await initializeLocalStream();
-      await PeerService.initializePeer(room);
-      await PeerService.addTracks(stream);
-      const answer = await PeerService.createAnswer(offer);
-      socket.emit("call:accepted", { to: from, answer });
-      setIsCallInProgress(true);
-    } catch (error) {
-      console.error("Error in handleIncomingCall:", error);
-      setIsCallInProgress(false);
-    }
-  }, [socket, room]);
-
-  // Handle call accepted
-  const handleCallAccepted = useCallback(({ answer }) => {
-    try {
-      PeerService.setRemoteDescription(answer);
-      sendStreams();
-    } catch (error) {
-      console.error("Error in handleCallAccepted:", error);
-    }
-  }, [sendStreams]);
-
-  // Handle negotiation needed
-  const handleNegotiationNeeded = useCallback(async () => {
-    try {
-      const offer = await PeerService.createOffer();
-      socket.emit("peer:nego:needed", { offer, to: remoteSocketId });
-    } catch (error) {
-      console.error("Error in handleNegotiationNeeded:", error);
-    }
-  }, [remoteSocketId, socket]);
-
-  // Handle incoming negotiation
-  const handleNegotiationIncoming = useCallback(async ({ from, offer }) => {
-    try {
-      const answer = await PeerService.getAnswer(offer);
-      socket.emit("peer:nego:done", { to: from, answer });
-    } catch (error) {
-      console.error("Error in handleNegotiationIncoming:", error);
-    }
-  }, [socket]);
-
-  // Handle final negotiation
-  const handleNegotiationFinal = useCallback(async ({ answer }) => {
-    try {
-      await PeerService.setLocalDescription(answer);
-    } catch (error) {
-      console.error("Error in handleNegotiationFinal:", error);
     }
   }, []);
 
-  // Handle ending a call
-  const handleEndCall = useCallback(() => {
+  // Enhanced cleanup function
+  const cleanupStreams = useCallback(() => {
     if (myStream) {
       myStream.getTracks().forEach((track) => track.stop());
     }
@@ -143,10 +58,89 @@ const RoomPage = () => {
     setMyStream(null);
     setRemoteStream(null);
     setIsCallInProgress(false);
-    socket.emit("call:end", { to: remoteSocketId });
-  }, [myStream, remoteSocketId, socket]);
+    setError(null);
+  }, [myStream]);
 
-  // Toggle audio
+  // Handle user joined event
+  const handleUserJoined = useCallback(({ id, room: joinedRoom }) => {
+    if (joinedRoom === room) {
+      console.log(`User joined room ${joinedRoom}, socket ID: ${id}`);
+      setRemoteSocketId(id);
+    }
+  }, [room]);
+
+  // Enhanced call handling with proper error management
+  const handleCallUser = useCallback(async () => {
+    try {
+      setError(null);
+      const stream = await initializeLocalStream();
+      await PeerService.initializePeer(room);
+      await PeerService.addTracks(stream);
+      const offer = await PeerService.createOffer();
+      if (offer) {
+        socket.emit("user:call", { to: remoteSocketId, offer, room });
+        setIsCallInProgress(true);
+      }
+    } catch (error) {
+      console.error("Error in handleCallUser:", error);
+      setError("Failed to start call. Please refresh and try again.");
+      cleanupStreams();
+    }
+  }, [remoteSocketId, room, socket, initializeLocalStream, cleanupStreams]);
+
+  // Enhanced incoming call handler
+  const handleIncomingCall = useCallback(async ({ from, offer }) => {
+    try {
+      setError(null);
+      setRemoteSocketId(from);
+      const stream = await initializeLocalStream();
+      await PeerService.cleanup();
+      await PeerService.initializePeer(room);
+      await PeerService.addTracks(stream);
+      const answer = await PeerService.createAnswer(offer);
+      if (answer) {
+        socket.emit("call:accepted", { to: from, answer });
+        setIsCallInProgress(true);
+      }
+    } catch (error) {
+      console.error("Error in handleIncomingCall:", error);
+      setError("Failed to accept call. Please refresh and try again.");
+      cleanupStreams();
+    }
+  }, [socket, room, initializeLocalStream, cleanupStreams]);
+
+  // Handle call accepted with error handling
+  const handleCallAccepted = useCallback(async ({ answer }) => {
+    try {
+      await PeerService.setRemoteDescription(answer);
+    } catch (error) {
+      console.error("Error in handleCallAccepted:", error);
+      setError("Failed to establish connection. Please try again.");
+      cleanupStreams();
+    }
+  }, [cleanupStreams]);
+
+  // Setup PeerService event listeners
+  useEffect(() => {
+    const handlePeerError = ({ type, message }) => {
+      console.error(`Peer error (${type}):`, message);
+      setError(`Connection error: ${message}`);
+    };
+
+    const handleRemoteStream = ({ stream }) => {
+      setRemoteStream(stream);
+    };
+
+    PeerService.on('error', handlePeerError);
+    PeerService.on('remoteStream', handleRemoteStream);
+
+    return () => {
+      PeerService.off('error', handlePeerError);
+      PeerService.off('remoteStream', handleRemoteStream);
+    };
+  }, []);
+
+  // Enhanced media controls
   const toggleAudio = useCallback(() => {
     if (myStream) {
       const audioTrack = myStream.getAudioTracks()[0];
@@ -157,7 +151,6 @@ const RoomPage = () => {
     }
   }, [myStream]);
 
-  // Toggle video
   const toggleVideo = useCallback(() => {
     if (myStream) {
       const videoTrack = myStream.getVideoTracks()[0];
@@ -168,70 +161,41 @@ const RoomPage = () => {
     }
   }, [myStream]);
 
-  // Copy room link
   const copyRoomLink = useCallback(() => {
     navigator.clipboard.writeText(roomLink);
     setIsCopied(true);
     setTimeout(() => setIsCopied(false), 2000);
   }, [roomLink]);
 
-  // Set up event listeners
+  // Socket event listeners
   useEffect(() => {
     socket.on("user:joined", handleUserJoined);
     socket.on("incoming:call", handleIncomingCall);
     socket.on("call:accepted", handleCallAccepted);
-    socket.on("peer:nego:needed", handleNegotiationIncoming);
-    socket.on("peer:nego:final", handleNegotiationFinal);
-    socket.on("call:ended", handleEndCall);
+    socket.on("call:ended", cleanupStreams);
 
     return () => {
       socket.off("user:joined", handleUserJoined);
       socket.off("incoming:call", handleIncomingCall);
       socket.off("call:accepted", handleCallAccepted);
-      socket.off("peer:nego:needed", handleNegotiationIncoming);
-      socket.off("peer:nego:final", handleNegotiationFinal);
-      socket.off("call:ended", handleEndCall);
+      socket.off("call:ended", cleanupStreams);
     };
-  }, [
-    socket,
-    handleUserJoined,
-    handleIncomingCall,
-    handleCallAccepted,
-    handleNegotiationIncoming,
-    handleNegotiationFinal,
-    handleEndCall,
-  ]);
+  }, [socket, handleUserJoined, handleIncomingCall, handleCallAccepted, cleanupStreams]);
 
-  // Handle remote stream
-  useEffect(() => {
-    if (!PeerService.peer) return;
-
-    const handleTrack = (event) => {
-      const [remoteVideoStream] = event.streams;
-      setRemoteStream(remoteVideoStream);
-    };
-
-    PeerService.peer.ontrack = handleTrack;
-
-    return () => {
-      if (PeerService.peer) {
-        PeerService.peer.ontrack = null;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    setRoomLink(`${window.location}`);
-  }, [socket.id]);
-
-  
   return (
     <div className="min-h-screen bg-gray-100 p-8">
       <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-lg p-6">
+        {error && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-bold text-gray-800">Video Chat Room</h1>
           <div className="flex items-center gap-2">
-          <input
+            <input
               type="text"
               value={roomLink}
               readOnly
@@ -263,7 +227,7 @@ const RoomPage = () => {
                   {isVideoEnabled ? <Video size={20} /> : <VideoOff size={20} />}
                 </button>
                 <button
-                  onClick={handleEndCall}
+                  onClick={cleanupStreams}
                   className="p-3 rounded-full bg-red-500 text-white"
                 >
                   <PhoneOff size={20} />
@@ -315,7 +279,10 @@ const RoomPage = () => {
         </div>
 
         <div className="mt-4 text-center text-gray-600">
-          {remoteSocketId ? <p>Connected with peer</p> : <p>Waiting for someone to join...</p>}
+          {remoteSocketId ? 
+            <p>Connected with peer</p> : 
+            <p>Waiting for someone to join...</p>
+          }
         </div>
       </div>
     </div>

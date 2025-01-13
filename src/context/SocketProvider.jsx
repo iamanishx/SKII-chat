@@ -1,4 +1,3 @@
-// SocketProvider.jsx
 import React, { createContext, useMemo, useContext } from "react";
 import { io } from "socket.io-client";
 import PeerService from "../service/peer";
@@ -17,7 +16,7 @@ export const SocketProvider = (props) => {
     const s = io(socketUrl);
 
     // Handle room join event
-    s.on("user:joined", ({ id, room }) => {
+    s.on("user:joined", ({ id, room, email }) => {
       console.log(`New user joined room ${room} with ID:`, id);
     });
 
