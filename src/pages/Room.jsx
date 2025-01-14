@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback, useState } from "react";
+import React, { useEffect, useCallback, useState,useRef} from "react";
 import { useParams } from "react-router-dom";
 import { useSocket } from "../context/SocketProvider";
 import { Check, Mic, MicOff, Video, VideoOff, Phone, PhoneOff, Copy, AlertCircle } from "lucide-react";
@@ -17,6 +17,26 @@ const RoomPage = () => {
   const [isCopied, setIsCopied] = useState(false);
   const [isCallInProgress, setIsCallInProgress] = useState(false);
   const [error, setError] = useState(null);
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+
+
+
+  useEffect(() => {
+    if (localVideoRef.current && myStream) {
+      localVideoRef.current.srcObject = myStream;
+    }
+  }, [myStream]);
+
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteStream) {
+      console.log("Setting remote stream to video element");
+      remoteVideoRef.current.srcObject = remoteStream;
+      // Ensure the video starts playing
+      remoteVideoRef.current.play().catch(e => console.error("Error playing remote video:", e));
+    }
+  }, [remoteStream]);
+
 
   // Initialize room and socket connection
   useEffect(() => {
@@ -119,6 +139,19 @@ const RoomPage = () => {
       cleanupStreams();
     }
   }, [cleanupStreams]);
+
+  useEffect(() => {
+    const handleRemoteStream = ({ stream }) => {
+      console.log("Received remote stream, tracks:", stream.getTracks().map(t => t.kind));
+      setRemoteStream(stream);
+    };
+
+    PeerService.on('remoteStream', handleRemoteStream);
+
+    return () => {
+      PeerService.off('remoteStream', handleRemoteStream);
+    };
+  }, []);
 
   // Setup PeerService event listeners
   useEffect(() => {
@@ -246,36 +279,32 @@ const RoomPage = () => {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {myStream && (
-              <div className="relative">
-                <h2 className="text-lg font-semibold mb-2">Your Video</h2>
-                <video
-                  className="rounded-lg bg-gray-900 w-full"
-                  height="300"
-                  autoPlay
-                  muted
-                  playsInline
-                  ref={(video) => {
-                    if (video) video.srcObject = myStream;
-                  }}
-                />
-              </div>
-            )}
-            {remoteStream && (
-              <div className="relative">
-                <h2 className="text-lg font-semibold mb-2">Remote Video</h2>
-                <video
-                  className="rounded-lg bg-gray-900 w-full"
-                  height="300"
-                  autoPlay
-                  playsInline
-                  ref={(video) => {
-                    if (video) video.srcObject = remoteStream;
-                  }}
-                />
-              </div>
-            )}
+        {myStream && (
+          <div className="relative">
+            <h2 className="text-lg font-semibold mb-2">Your Video</h2>
+            <video
+              ref={localVideoRef}
+              className="rounded-lg bg-gray-900 w-full"
+              height="300"
+              autoPlay
+              playsInline
+              muted
+            />
           </div>
+        )}
+        {remoteStream && (
+          <div className="relative">
+            <h2 className="text-lg font-semibold mb-2">Remote Video</h2>
+            <video
+              ref={remoteVideoRef}
+              className="rounded-lg bg-gray-900 w-full"
+              height="300"
+              autoPlay
+              playsInline
+            />
+          </div>
+        )}
+      </div>
         </div>
 
         <div className="mt-4 text-center text-gray-600">

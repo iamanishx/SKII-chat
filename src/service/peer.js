@@ -51,56 +51,66 @@ class PeerService extends EventEmitter {
   async createOffer() {
     if (!this.peer) throw new Error('No peer connection available');
     try {
-      await this.waitForStableState();
       const offer = await this.peer.createOffer({
         offerToReceiveAudio: true,
-        offerToReceiveVideo: true
+        offerToReceiveVideo: true,
+        iceRestart: true // Add this to help with connection issues
       });
       await this.peer.setLocalDescription(offer);
-      return this.peer.localDescription;
+      return offer;
     } catch (error) {
       this.emit('error', { type: 'offer', message: 'Error creating offer', error });
       await this.handleConnectionFailure();
     }
   }
-
+  
   async createAnswer(offer) {
     if (!this.peer) throw new Error('No peer connection available');
     try {
-      await this.waitForStableState();
       await this.peer.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await this.peer.createAnswer();
-      await this.peer.setLocalDescription(new RTCSessionDescription(answer));
-      return this.peer.localDescription;
+      await this.peer.setLocalDescription(answer);
+      return answer;
     } catch (error) {
       this.emit('error', { type: 'answer', message: 'Error creating answer', error });
       await this.handleConnectionFailure();
     }
   }
 
+
   async setRemoteDescription(answer) {
     if (!this.peer) return;
 
+    // Prevent concurrent setRemoteDescription calls
+    if (this.isSettingRemoteDescription) {
+      console.log('Already setting remote description, skipping');
+      return;
+    }
+
     try {
+      this.isSettingRemoteDescription = true;
       const currentState = this.peer.signalingState;
       console.log('Current signaling state:', currentState);
 
-      if (currentState === 'have-local-offer') {
+      // Only proceed if we're in a valid state to set remote description
+      if (['stable', 'have-local-offer'].includes(currentState)) {
+        if (currentState === 'stable') {
+          // If we're stable, we need to set local description first
+          const offer = await this.createOffer();
+          await this.peer.setLocalDescription(offer);
+        }
+
         await this.peer.setRemoteDescription(new RTCSessionDescription(answer));
         console.log('Remote description set successfully');
 
         // Process any pending ICE candidates
-        while (this.pendingCandidates && this.pendingCandidates.length > 0) {
+        while (this.pendingCandidates.length > 0) {
           const candidate = this.pendingCandidates.shift();
           await this.addIceCandidate(candidate);
         }
-      } else if (currentState === 'stable') {
-        console.warn('Connection is already stable, ignoring remote description');
-        return;
       } else {
-        console.warn(`Unexpected signaling state: ${currentState}`);
-        await this.waitForStableState();
-        await this.peer.setRemoteDescription(new RTCSessionDescription(answer));
+        console.warn(`Invalid signaling state for setting remote description: ${currentState}`);
+        throw new Error(`Invalid signaling state: ${currentState}`);
       }
     } catch (error) {
       console.error('Error setting remote description:', error);
@@ -110,6 +120,8 @@ class PeerService extends EventEmitter {
         error
       });
       await this.handleConnectionFailure();
+    } finally {
+      this.isSettingRemoteDescription = false;
     }
   }
 
@@ -226,12 +238,13 @@ class PeerService extends EventEmitter {
     this.setupPeerEvents();
   }
 
+  
   setupPeerEvents() {
     if (!this.peer) return;
 
     this.peer.onicecandidate = ({ candidate }) => {
       if (candidate && this.roomId) {
-        console.log('Sending ICE candidate:', candidate);
+        console.log('Sending ICE candidate');
         this.socket?.emit('peer:ice-candidate', {
           candidate,
           to: this.roomId
@@ -240,11 +253,22 @@ class PeerService extends EventEmitter {
     };
 
     this.peer.ontrack = (event) => {
-      console.log('Received remote track:', event.streams[0]);
-      if (event.streams && event.streams[0]) {
-        this.emit('remoteStream', { 
-          stream: event.streams[0], 
-          roomId: this.roomId 
+      console.log('Received remote track:', event.track.kind);
+      
+      // Create a new MediaStream if it doesn't exist
+      if (!this.remoteStream) {
+        this.remoteStream = new MediaStream();
+      }
+
+      // Add the track to our remote stream
+      this.remoteStream.addTrack(event.track);
+      
+      // Emit the stream immediately when we get both audio and video
+      if (this.remoteStream.getTracks().length >= 2) {
+        console.log('Emitting complete remote stream');
+        this.emit('remoteStream', {
+          stream: this.remoteStream,
+          roomId: this.roomId
         });
       }
     };
@@ -270,11 +294,9 @@ class PeerService extends EventEmitter {
         this.handleConnectionFailure();
       }
     };
-
-    this.peer.onicegatheringstatechange = () => {
-      console.log('ICE gathering state:', this.peer?.iceGatheringState);
-    };
   }
+
+
   async handleConnectionFailure() {
     if (this.isReconnecting || this.reconnectAttempts >= this.maxReconnectAttempts) {
       this.emit('error', { type: 'reconnect', message: 'Max reconnection attempts reached' });
@@ -301,7 +323,10 @@ class PeerService extends EventEmitter {
   }
 
   async addTracks(stream) {
-    if (!this.peer || !stream) return;
+    if (!this.peer || !stream) {
+      console.error('No peer or stream available');
+      return;
+    }
 
     try {
       // Remove existing tracks
@@ -315,8 +340,11 @@ class PeerService extends EventEmitter {
       this.senders.clear();
 
       // Add new tracks
-      stream.getTracks().forEach((track) => {
-        console.log('Adding track to peer connection:', track.kind);
+      const tracks = stream.getTracks();
+      console.log(`Adding ${tracks} tracks to peer connection`);
+      
+      tracks.forEach((track) => {
+        console.log('Adding track:', track.kind);
         try {
           const sender = this.peer.addTrack(track, stream);
           this.senders.set(track.kind, sender);
@@ -326,13 +354,14 @@ class PeerService extends EventEmitter {
       });
     } catch (error) {
       console.error('Error managing tracks:', error);
-      this.emit('error', { 
-        type: 'add-tracks', 
-        message: 'Error adding tracks', 
-        error 
+      this.emit('error', {
+        type: 'add-tracks',
+        message: 'Error adding tracks',
+        error
       });
     }
   }
+
 
   async switchMediaSource(newStream) {
     if (!this.peer) {

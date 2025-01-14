@@ -43,12 +43,14 @@ export const SocketProvider = (props) => {
     s.on("call:accepted", async ({ answer, room }) => {
       console.log(`Call accepted in room ${room}`);
       try {
+        if (!PeerService.peer) {
+          await PeerService.initializePeer(room);
+        }
         await PeerService.setRemoteDescription(answer);
       } catch (error) {
         console.error("Error setting remote description:", error);
       }
     });
-
     // Handle negotiation
     s.on("peer:nego:needed", async ({ from, offer, room }) => {
       console.log(`Negotiation needed in room ${room} from:`, from);
